@@ -10,8 +10,9 @@ small synthetic sample, without AWS.
 | What | Where | Verified by |
 | --- | --- | --- |
 | Original EMR run on the full dataset | [`chicago_crime_analysis.ipynb`](chicago_crime_analysis.ipynb) | outputs saved in the notebook (not re-run since) |
-| Same transformations as functions | [`chicago_crime/transforms.py`](chicago_crime/transforms.py) | 18 pytest tests on synthetic data, GitHub Actions |
-| Batch job (local path or `s3://`) | [`chicago_crime/pipeline.py`](chicago_crime/pipeline.py) | end-to-end test on [`examples/sample_crimes.csv`](examples/sample_crimes.csv) |
+| Same transformations as functions | [`chicago_crime/transforms.py`](chicago_crime/transforms.py) | 21 pytest tests on synthetic data, GitHub Actions |
+| Batch job (local path or `s3://`) | [`chicago_crime/pipeline.py`](chicago_crime/pipeline.py), explicit input schema in [`schema.py`](chicago_crime/schema.py) | end-to-end test on [`examples/sample_crimes.csv`](examples/sample_crimes.csv) |
+| Running the job on EMR | [`docs/emr-runbook.md`](docs/emr-runbook.md): permissions, commands, evidence to keep | **not executed yet** |
 
 ## Pipeline
 
@@ -29,7 +30,7 @@ flowchart LR
 
 | Stage | What happens | Result of the EMR run (from the notebook) |
 | --- | --- | --- |
-| Ingest | Read the raw CSV with a header and schema inference | **8,548,383 rows**, 22 columns |
+| Ingest | Notebook: schema inference. Job: explicit 22-column schema, header checked | **8,548,383 rows**, 22 columns |
 | Profile | Classify columns by type; null percentage per column (notebook only) | e.g. Ward 7.19 % null, coordinates 1.13 % null |
 | Clean | Drop rows without coordinates or with an unparseable `Date`, de-duplicate on `ID` and then `Case Number`, cast `Arrest` / `Domestic` to boolean, add `days_since_crime` | 8,451,823 rows after the coordinate filter, **8,451,207** after de-duplication |
 | Enrich | `time_of_day` (Night 0–5 h, Morning 6–11, Afternoon 12–17, Evening 18–23), `is_violent_crime` (homicide, criminal sexual assault, battery), `district_name` (unknown codes → `Unknown`) | 1,574,913 rows flagged violent |
@@ -62,7 +63,7 @@ and writes:
 
 ```text
 output/
-├── chicago_crimes_enriched/          # cleaned + enriched rows, Parquet
+├── chicago_crimes_enriched/          # cleaned + enriched rows, Parquet, one folder per Year=…
 ├── district_metrics/                 # Parquet
 ├── facts/crime_fact/                 # Parquet
 └── dimensions/district_dimension/    # JSON
@@ -72,15 +73,30 @@ output/
 the notebook.
 
 **Sample data.** [`examples/sample_crimes.csv`](examples/sample_crimes.csv) has 13 hand-written,
-synthetic rows with the 9 columns the pipeline uses (the real export has 22). It contains one row
-without coordinates, one with an invalid date, an exact duplicate and a repeated case number, so
-9 rows survive cleaning. It is not real crime data.
+synthetic rows in the export's 22-column layout. It contains one row without coordinates, one with
+an invalid date, an exact duplicate and a repeated case number, so 9 rows survive cleaning. It is
+not real crime data.
+
+**Input schema.** The job reads the CSV with an explicit schema (`chicago_crime/schema.py`) instead
+of inferring it: no extra pass over 8.5M rows, and stable types. Numeric types match what inference
+chose on the full file in the EMR run; `IUCR` and `FBI Code` stay strings ("0910", "08B"). A CSV
+schema is applied by position, so the job first compares the header with the schema and stops on
+any difference. A value that does not fit its type (e.g. a non-numeric `District`) becomes NULL and
+the rest of the row is kept.
+
+**Partitioning.** `chicago_crimes_enriched` is written partitioned by `Year` (2001 to today, about
+26 folders). Most questions about this data are bounded in time (a month, a year), and Spark then
+reads only the matching folders. The data is repartitioned by `Year` before writing, so each year
+gets one file — with 8.5M rows that is roughly 300k rows per file, not thousands of small files.
+The other outputs stay unpartitioned: `district_metrics` and `district_dimension` have a few dozen
+rows, and `crime_fact` has no date column to partition by (see Limitations).
 
 ## Run it on the full dataset
 
 1. Download the dataset as CSV from the City of Chicago Data Portal (link below).
 2. Put it in an S3 location you control, or keep it locally.
-3. Run the job with your own paths, e.g. on an EMR cluster:
+3. Run the job with your own paths, e.g. on an EMR cluster (see
+   [`docs/emr-runbook.md`](docs/emr-runbook.md) for permissions, EMR Serverless and a safe first run):
 
    ```bash
    spark-submit --py-files chicago_crime.zip chicago_crime/pipeline.py \
@@ -91,17 +107,20 @@ without coordinates, one with an invalid date, an exact duplicate and a repeated
    kernel after replacing `s3://<your-bucket>/…` with your locations.
 
 The packaged job has only been run locally on the synthetic sample (with `python -m` and with
-`spark-submit --master "local[1]"`); it has not been run on EMR or on
-the full dataset. The figures above come from the notebook run.
+`spark-submit --master "local[1]"`); it has not been run on EMR or on the full dataset. The figures
+above come from the notebook run.
 
 ## Tests and CI
 
 `tests/test_pipeline.py` checks, on the sample file: which rows are dropped by cleaning and why,
 column types, `days_since_crime` with a fixed date, `time_of_day` boundaries, the violent-crime
 flag, district names including the `Unknown` fallback, district metrics and the arrest-rate check,
-the `lag` and `dense_rank` window results, the hotspot cell, the fact and dimension tables, and that
-the job writes all four outputs. GitHub Actions runs the tests on Python 3.12 and 3.14 with Java 17;
-no AWS access or secrets are needed.
+the `lag` and `dense_rank` window results, the hotspot cell, the fact and dimension tables, the
+explicit schema (codes kept as strings, wrong header rejected, a mistyped value becoming NULL), and
+that the job writes all four outputs with one `Year=` folder and one file per year.
+
+GitHub Actions runs the tests on Python 3.12 and 3.14 with PySpark 4.1, and on Python 3.9 with
+PySpark 3.5 — the versions in Amazon EMR 7.x — all with Java 17. No AWS access or secrets are needed.
 
 ## Environment and provenance
 
@@ -118,14 +137,13 @@ no AWS access or secrets are needed.
 
 ## Limitations and what I would improve
 
-- Outputs are not partitioned; writing them partitioned by year (discussed in the notebook) is not
-  implemented yet.
 - `days_since_crime` depends on the run date, so it should not live in a fact table; the event date
   should be stored instead.
 - `district_dimension` includes a `NULL` district, and `dropDuplicates` keeps an arbitrary row per
   key; data-quality checks are minimal and should cover row counts between stages and key uniqueness.
-- The schema is inferred from the CSV; an explicit schema would be faster and safer on the full file.
 - The fact and dimension tables are written separately; nothing joins them yet.
+- Partitions use the export's own `Year` column; the job does not check that it matches the year of
+  `Date`.
 
 ## Dataset
 

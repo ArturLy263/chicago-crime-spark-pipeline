@@ -7,6 +7,8 @@ parsed with `try_to_timestamp`, so invalid dates become NULL and are filtered
 out as the notebook intended, also under Spark 4's ANSI mode.
 """
 
+from __future__ import annotations
+
 from datetime import date
 
 from pyspark.sql import DataFrame

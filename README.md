@@ -128,7 +128,9 @@ PySpark 3.5 — the versions in Amazon EMR 7.x — all with Java 17. No AWS acce
   1 executor (1 core, 2 GB memory).
 - The data was read from and written to an S3 bucket owned by the mentorship programme. It is not
   publicly readable, so after the run its name was replaced with `<your-bucket>` everywhere in the
-  notebook, including the printed output paths; nothing else in the code or outputs was changed.
+  notebook, including the printed output paths, and the EMR Serverless application and job-run IDs
+  in the session output were replaced with `<application-id>` and `<job-run-id>`; nothing else in the
+  code or outputs was changed.
 - The saved outputs come from one Spark session; the execution counts show that a few cells were
   re-run during the session. I have not re-run the notebook since.
 - Two differences between the package and the notebook: dates are parsed with `try_to_timestamp`,

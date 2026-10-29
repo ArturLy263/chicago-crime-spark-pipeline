@@ -11,3 +11,6 @@ __pycache__/
 
 # Local data
 data/
+
+# Pipeline output
+output/

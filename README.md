@@ -37,9 +37,9 @@ flowchart LR
 
 - AWS EMR, Sparkmagic (PySpark) notebook kernel; the session was configured with
   1 executor (1 core, 2 GB memory).
-- Input and output paths point to an S3 bucket owned by the mentorship programme
-  (`s3://<mentorship-bucket>/…`). It is not publicly readable, so the notebook cannot be re-run
-  as it is.
+- The data was read from and written to an S3 bucket owned by the mentorship programme. It is not
+  publicly readable, so after the run its name was replaced with `<your-bucket>` everywhere in the
+  notebook, including the printed output paths; nothing else in the code or outputs was changed.
 - The saved outputs come from one Spark session; the execution counts show that a few cells were
   re-run during the session.
 - I have not re-run the notebook since these outputs were saved.
@@ -50,7 +50,7 @@ You need your own copy of the dataset in S3 (or locally) and a Spark environment
 
 1. Download the dataset as CSV from the City of Chicago Data Portal (link below).
 2. Upload it to an S3 location you control, or keep it locally.
-3. Replace the S3 paths in the notebook with your own locations.
+3. Replace `s3://<your-bucket>/…` in the notebook with your own locations.
 4. Run it on EMR with a Sparkmagic kernel, or remove the `%%configure` cell and run it in a local
    PySpark Jupyter kernel.
 

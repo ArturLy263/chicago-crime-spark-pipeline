@@ -1,4 +1,4 @@
-"""Tests on examples/sample_crimes.csv: 13 synthetic rows with known edge cases.
+"""Tests on examples/sample_crimes.csv: 13 synthetic rows in the export's 22-column layout.
 
 Row 9 has no coordinates, row 10 has an unparseable date, one row repeats ID 1
 and ID 12 repeats case number JA100002, so 9 rows survive cleaning.
@@ -12,6 +12,7 @@ from pyspark.sql import functions as F
 
 from chicago_crime import transforms as t
 from chicago_crime.pipeline import run
+from chicago_crime.schema import RAW_SCHEMA, read_raw
 
 SAMPLE = str(Path(__file__).resolve().parent.parent / "examples" / "sample_crimes.csv")
 AS_OF = date(2024, 3, 1)
@@ -19,7 +20,7 @@ AS_OF = date(2024, 3, 1)
 
 @pytest.fixture(scope="module")
 def raw(spark):
-    return spark.read.option("header", True).option("inferSchema", True).csv(SAMPLE)
+    return read_raw(spark, SAMPLE)
 
 
 @pytest.fixture(scope="module")
@@ -38,6 +39,29 @@ def test_cleaning_drops_invalid_and_duplicate_rows(raw, enriched):
     assert "JA100009" not in cases  # no coordinates
     assert "JA100010" not in cases  # date not parseable
     assert enriched.select("ID").distinct().count() == 9
+
+
+def test_explicit_schema_keeps_codes_as_strings(raw):
+    assert raw.schema == RAW_SCHEMA
+    first = raw.filter("ID = 3").first()
+    assert (first["IUCR"], first["FBI Code"], first["District"], first["Year"]) == ("0110", "01A", 7, 2024)
+
+
+def test_unexpected_header_is_rejected(spark, tmp_path):
+    path = tmp_path / "other.csv"
+    path.write_text("Case Number,ID\nJA1,1\n")
+    with pytest.raises(ValueError, match="Unexpected CSV header"):
+        read_raw(spark, str(path))
+
+
+def test_value_of_wrong_type_becomes_null(spark, tmp_path):
+    lines = Path(SAMPLE).read_text().splitlines()
+    lines[1] = lines[1].replace(",101,1,10,", ",101,abc,10,")  # District of ID 1
+    path = tmp_path / "bad.csv"
+    path.write_text("\n".join(lines) + "\n")
+    row = read_raw(spark, str(path)).filter("Beat = 101 AND `Case Number` = 'JA100001'").orderBy("District").first()
+    assert row["District"] is None
+    assert row["Arrest"] is True  # the rest of the row is kept
 
 
 def test_types_after_cleaning(enriched):
@@ -126,8 +150,14 @@ def test_fact_and_dimension_tables(enriched):
 
 def test_run_writes_all_outputs(spark, tmp_path):
     run(spark, SAMPLE, str(tmp_path), as_of=AS_OF)
-    assert spark.read.parquet(str(tmp_path / "chicago_crimes_enriched")).count() == 9
-    assert "Primary_Type" in spark.read.parquet(str(tmp_path / "chicago_crimes_enriched")).columns
+    enriched = spark.read.parquet(str(tmp_path / "chicago_crimes_enriched"))
+    assert enriched.count() == 9
+    assert "Primary_Type" in enriched.columns
+    assert enriched.filter("Year = 2024").count() == 9  # partition column read back
+
+    year_dirs = [p for p in (tmp_path / "chicago_crimes_enriched").iterdir() if p.is_dir()]
+    assert [p.name for p in year_dirs] == ["Year=2024"]
+    assert len(list(year_dirs[0].glob("*.parquet"))) == 1  # one file per year
     assert spark.read.parquet(str(tmp_path / "district_metrics")).count() == 5
     assert spark.read.parquet(str(tmp_path / "facts" / "crime_fact")).count() == 9
     assert spark.read.json(str(tmp_path / "dimensions" / "district_dimension")).count() == 5

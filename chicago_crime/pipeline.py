@@ -3,25 +3,30 @@
     python -m chicago_crime.pipeline --input examples/sample_crimes.csv --output output/
 """
 
+from __future__ import annotations
+
 import argparse
 from datetime import date
 
 from pyspark.sql import DataFrame, SparkSession
 
 from chicago_crime import transforms as t
+from chicago_crime.schema import read_raw
 
 
 def run(spark: SparkSession, input_path: str, output_path: str, as_of: date | None = None) -> dict[str, DataFrame]:
-    raw = spark.read.option("header", True).option("inferSchema", True).csv(input_path)
+    raw = read_raw(spark, input_path)
     enriched = t.enrich(t.clean(raw, as_of=as_of))
 
     metrics = t.district_metrics(enriched)
     t.check_arrest_rates(metrics)
 
     out = output_path.rstrip("/")
-    enriched.withColumnRenamed("Primary Type", "Primary_Type").write.mode(
+    # One folder per year, one file per folder: repartitioning by Year first
+    # avoids writing a small file for every year in every input task.
+    enriched.withColumnRenamed("Primary Type", "Primary_Type").repartition("Year").write.mode(
         "overwrite"
-    ).parquet(f"{out}/chicago_crimes_enriched")
+    ).partitionBy("Year").parquet(f"{out}/chicago_crimes_enriched")
     metrics.write.mode("overwrite").parquet(f"{out}/district_metrics")
     t.crime_fact(enriched).write.mode("overwrite").parquet(f"{out}/facts/crime_fact")
     t.district_dimension(enriched).write.mode("overwrite").json(
